@@ -185,14 +185,17 @@ class Car:
         if self.is_dead:
             return
 
-        self.steering_angle += self.config.rotation_step * rotation_value
-        self.steering_angle = np.clip(self.steering_angle, self.config.min_steering_angle, self.config.max_steering_angle)
+        rotation_value = np.clip(rotation_value, self.config.rotation_value_min, self.config.rotation_value_max)
+        acceleration_value = np.clip(acceleration_value, self.config.acceleration_value_min, self.config.acceleration_value_max)
+
+        self.steering_angle += rotation_value
+        self.steering_angle = np.clip(rotation_value, self.config.min_steering_angle, self.config.max_steering_angle)
 
         if acceleration_value < 0:
             acceleration_value = acceleration_value * self.config.backward_acceleration_ratio
 
         self.angle += self.steering_angle
-        self.velocity += acceleration_value * self.config.acceleration_step
+        self.velocity += acceleration_value
 
         vel_x = self.velocity * np.cos(self.angle)
         vel_y = self.velocity * np.sin(self.angle)
@@ -212,9 +215,9 @@ class Car:
 
         pygame.draw.polygon(self.window, colour, self.coords.export_int())
 
-        if not self.is_dead:
-            for ep in self.endpoints:
-                pygame.draw.line(self.window, self.config.beam_colour, self.center.export_int(), ep.export_int())
+        #if not self.is_dead:
+        #    for ep in self.endpoints:
+        #        pygame.draw.line(self.window, self.config.beam_colour, self.center.export_int(), ep.export_int())
 
 class Config:
     image_path = ''
@@ -233,12 +236,17 @@ class Config:
     beam_colour = (175, 65, 255)
     dead_car_colour = (255, 0, 0)
 
-    rotation_step = 0.08
-    acceleration_step = 0.5
     backward_acceleration_ratio = 0.5
 
     max_steering_angle = np.pi/4
     min_steering_angle = -np.pi/4
+
+    rotation_value_abs = 10. / 180. * np.pi
+    rotation_value_min = -rotation_value_abs
+    rotation_value_max = rotation_value_abs
+
+    acceleration_value_min = -0.1
+    acceleration_value_max = 0.2
 
 class MapGame:
     def __init__(self, config: Config):
@@ -253,17 +261,20 @@ class MapGame:
         self.config.image_width = bbox[2]
         self.config.image_height = bbox[3]
 
-        self.start_coord = self.locate_start()
-
-    def locate_start(self) -> Coord:
+    def locate_start(self) -> Tuple[Coord, Coord]:
         a = np.asarray(self.image)
         start = np.nonzero((a[:, :, 0] == self.config.start_colour[0]) & (a[:, :, 1] == self.config.start_colour[1]) & (a[:, :, 2] == self.config.start_colour[2]))
-        start_mean_x = start[1].mean()
-        start_mean_y = start[0].mean()
-        return Coord(start_mean_x, start_mean_y)
+        min_x = start[1].min()
+        min_y = start[0].min()
+        max_x = start[1].max()
+        max_y = start[0].max()
+
+        min_c = Coord(min_x, min_y)
+        max_c = Coord(max_x, max_y)
+        return (min_c, max_c)
 
     def add_car(self, coord: Coord) -> None:
-        angle = -80
+        angle = -90
         angle = angle * np.pi / 180.
         c = Car(self.config, coord, angle, self.window)
         self.cars.append(c)
@@ -285,7 +296,7 @@ class MapGame:
 
     def step(self) -> None:
         for car in self.cars:
-            car.step(acceleration_value=0.1, rotation_value=0)
+            car.step(acceleration_value=0.01, rotation_value=0.001)
 
         for car in self.cars:
             coords = car.get_polygon()
@@ -301,7 +312,17 @@ def main():
 
     map_game = MapGame(config)
     map_game.init_render()
-    map_game.add_car(map_game.start_coord)
+
+    min_c, max_c = map_game.locate_start()
+    diff_x = max_c.x - min_c.x
+    diff_y = max_c.y - min_c.y
+
+    num_cars = 3
+    step_x = diff_x / num_cars
+    step_y = diff_y / num_cars
+    for i in range(num_cars):
+        c = min_c + Coord((step_x + config.car_width)*i, step_y*i)
+        map_game.add_car(c)
 
     run = True
     step = 0
