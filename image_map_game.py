@@ -16,9 +16,9 @@ FLAGS = parser.parse_args()
 Colour = Tuple[int, int, int]
 
 class Coord:
-    def __init__(self, x: int, y: int):
-        self.x = int(x)
-        self.y = int(y)
+    def __init__(self, x: float, y: float):
+        self.x = float(x)
+        self.y = float(y)
 
     def __add__(self, c: 'Coord') -> 'Coord':
         x = self.x + c.x
@@ -43,8 +43,11 @@ class Coord:
     def __repr__(self) -> str:
         return f'({self.x:d}.{self.y:d})'
 
-    def export(self) -> Colour:
+    def export(self) -> Tuple[float, float]:
         return (self.x, self.y)
+
+    def export_int(self) -> Tuple[int, int]:
+        return (int(self.x), int(self.y))
 
     def rotate(self, angle: float) -> 'Coord':
         c = np.cos(angle)
@@ -53,9 +56,7 @@ class Coord:
         xr = self.x*c - self.y*s
         yr = self.x*s + self.y*c
 
-        x = int(xr)
-        y = int(yr)
-        return Coord(x, y)
+        return Coord(xr, yr)
 
 class Polygon:
     def __init__(self, coords: List[Coord]):
@@ -70,8 +71,8 @@ class Polygon:
     def rotate(self, angle: float):
         return Polygon([c.rotate(angle) for c in self.coords])
 
-    def export(self):
-        return [(c.x, c.y) for c in self.coords]
+    def export_int(self):
+        return [c.export_int() for c in self.coords]
 
     def __getitem__(self, idx):
         if idx >= len(self.coords):
@@ -128,12 +129,18 @@ class Car:
         self.angle = angle
         self.window = window
         self.endpoints = []
+        self.is_dead = False
 
-        self.vel_x = 0.
-        self.vel_y = 0.
-        self.steering_angle = 0.0
+        self.velocity = 0.
+        self.steering_angle = 0.
 
         self.update_coords()
+
+    def crash(self):
+        self.is_dead = True
+
+    def get_polygon(self):
+        return self.coords
 
     def update_coords(self) -> None:
         x0 = self.center.x - self.config.car_length / 2
@@ -175,29 +182,39 @@ class Car:
             self.endpoints.append(endpoint)
 
     def step(self, acceleration_value, rotation_value):
+        if self.is_dead:
+            return
+
         self.steering_angle += self.config.rotation_step * rotation_value
-        if self.steering_angle > np.pi/2:
-            self.steering_angle = np.pi/2
-        if self.steering_angle < -np.pi/2:
-            self.steering_angle = -np.pi/2
-            
+        self.steering_angle = np.clip(self.steering_angle, self.config.min_steering_angle, self.config.max_steering_angle)
+
         if acceleration_value < 0:
             acceleration_value = acceleration_value * self.config.backward_acceleration_ratio
 
-        self.vel_x = self.vel_x + self.config.acceleration_step * acceleration_value * np.cos(self.steering_angle)
-        self.vel_y = self.vel_y - self.config.acceleration_step * acceleration_value * np.sin(self.steering_angle)
+        self.angle += self.steering_angle
+        self.velocity += acceleration_value * self.config.acceleration_step
 
-        off = Coord(self.vel_x, self.vel_y)
+        vel_x = self.velocity * np.cos(self.angle)
+        vel_y = self.velocity * np.sin(self.angle)
+
+        step = 1
+
+        off = Coord(vel_x*step, vel_y*step)
+
         self.center += off
         self.update_coords()
-
         self.run_beams()
 
     def render(self):
-        pygame.draw.polygon(self.window, self.config.car_colour, self.coords.export())
+        colour = self.config.car_colour
+        if self.is_dead:
+            colour = self.config.dead_car_colour
 
-        for ep in self.endpoints:
-            pygame.draw.line(self.window, self.config.beam_colour, self.center.export(), ep.export())
+        pygame.draw.polygon(self.window, colour, self.coords.export_int())
+
+        if not self.is_dead:
+            for ep in self.endpoints:
+                pygame.draw.line(self.window, self.config.beam_colour, self.center.export_int(), ep.export_int())
 
 class Config:
     image_path = ''
@@ -205,7 +222,7 @@ class Config:
     image_width = None
     image_height = None
 
-    car_width = 5
+    car_width = 3
     car_length = 8
 
     step_multiplier = 1.3
@@ -214,10 +231,14 @@ class Config:
     nonroad_colour = (255, 255, 255)
     car_colour = (255, 65, 0)
     beam_colour = (175, 65, 255)
+    dead_car_colour = (255, 0, 0)
 
     rotation_step = 0.08
     acceleration_step = 0.5
     backward_acceleration_ratio = 0.5
+
+    max_steering_angle = np.pi/4
+    min_steering_angle = -np.pi/4
 
 class MapGame:
     def __init__(self, config: Config):
@@ -242,7 +263,8 @@ class MapGame:
         return Coord(start_mean_x, start_mean_y)
 
     def add_car(self, coord: Coord) -> None:
-        angle = -45 * np.pi / 180.
+        angle = -80
+        angle = angle * np.pi / 180.
         c = Car(self.config, coord, angle, self.window)
         self.cars.append(c)
 
@@ -262,8 +284,16 @@ class MapGame:
         pygame.display.update()
 
     def step(self) -> None:
-        for c in self.cars:
-            c.step(0.1, 0.1)
+        for car in self.cars:
+            car.step(acceleration_value=0.1, rotation_value=0)
+
+        for car in self.cars:
+            coords = car.get_polygon()
+            for c in coords:
+                p = self.config.image_map.getpixel((c.x, c.y))
+                if p == self.config.nonroad_colour:
+                    car.crash()
+                    break
 
 def main():
     config = Config()
