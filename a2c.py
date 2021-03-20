@@ -7,7 +7,6 @@ import tqdm
 import numpy as np
 import tensorflow as tf
 import tensorflow_addons as tfa
-from tensorflow.keras.mixed_precision import experimental as mixed_precision
 
 
 eps = np.finfo(np.float32).eps.item()
@@ -82,7 +81,7 @@ def tf_env_step(action: tf.Tensor) -> List[tf.Tensor]:
 def run_episode(
         initial_state: tf.Tensor,
         model: tf.keras.Model,
-        max_steps: int) -> List[tf.Tensor]:
+        max_steps: int) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
     """Runs a single episode to collect training data."""
 
     action_probs_all = tf.TensorArray(dtype=initial_state.dtype, size=0, dynamic_size=True)
@@ -130,7 +129,7 @@ def get_expected_return(
     returns = tf.TensorArray(dtype=dtype, size=n)
 
     # Start from the end of `rewards` and accumulate reward sums into the `returns` array
-    rewards = tf.cast(rewards[::-1], dtype=dtype)
+    rewards = tf.cast(rewards[::-1], dtype)
     discounted_sum = tf.constant(0, dtype=dtype)
     discounted_sum_shape = discounted_sum.shape
     for i in tf.range(n):
@@ -152,6 +151,7 @@ class ActorCriticLoss(tf.keras.losses.Loss):
         super().__init__()
         self.huber_loss = tf.keras.losses.Huber(reduction=tf.keras.losses.Reduction.SUM)
 
+    @tf.function
     def __call__(self,
             action_probs: tf.Tensor,
             values: tf.Tensor,
@@ -202,8 +202,8 @@ def a2c(env):
     dtype = tf.float32
     if use_fp16:
         dtype = tf.float16
-        policy = mixed_precision.Policy('mixed_float16')
-        mixed_precision.set_policy(policy)
+        policy = tf.keras.mixed_precision.Policy('mixed_float16')
+        tf.keras.mixed_precision.set_global_policy(policy)
 
     hidden_size = 64
     actor_critic = ActorCriticShared(hidden_size, num_outputs)
@@ -220,7 +220,7 @@ def a2c(env):
         opt = tf.keras.optimizers.Adam(learning_rate=learning_rate)
 
     if use_fp16:
-        opt = mixed_precision.LossScaleOptimizer(opt, loss_scale='dynamic')
+        opt = tf.keras.mixed_precision.LossScaleOptimizer(opt, loss_scale='dynamic')
 
     loss_obj = ActorCriticLoss()
     #checkpoint = tf.train.Checkpoint(step=global_step, epoch=epoch_var, optimizer=opt, model=model)
