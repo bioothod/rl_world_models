@@ -1,11 +1,13 @@
+from __future__ import annotations
+from typing import *
+
 import argparse
+import os
 import PIL
 import pygame
 
 import matplotlib.pyplot as plt
 import numpy as np
-
-from typing import *
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--map_image', type=str, required=True, help='Map image')
@@ -13,29 +15,27 @@ parser.add_argument('--num_cars', type=int, default=1, help='Number of cars on t
 parser.add_argument('--output_dir', type=str, help='When set, save rendered frames there')
 FLAGS = parser.parse_args()
 
-Colour = Tuple[int, int, int]
-
 class Coord:
     def __init__(self, x: float, y: float):
         self.x = float(x)
         self.y = float(y)
 
-    def __add__(self, c: 'Coord') -> 'Coord':
+    def __add__(self, c: Coord) -> Coord:
         x = self.x + c.x
         y = self.y + c.y
         return Coord(x, y)
 
-    def __sub__(self, c: 'Coord') -> 'Coord':
+    def __sub__(self, c: Coord) -> Coord:
         x = self.x - c.x
         y = self.y - c.y
         return Coord(x, y)
 
-    def __mult__(self, f: float) -> 'Coord':
+    def __mult__(self, f: float) -> Coord:
         x = self.x * f
         y = self.y * f
         return Coord(x, y)
 
-    def __truediv__(self, f: float) -> 'Coord':
+    def __truediv__(self, f: float) -> Coord:
         x = self.x / f
         y = self.y / f
         return Coord(x, y)
@@ -49,7 +49,7 @@ class Coord:
     def export_int(self) -> Tuple[int, int]:
         return (int(self.x), int(self.y))
 
-    def rotate(self, angle: float) -> 'Coord':
+    def rotate(self, angle: float) -> Coord:
         c = np.cos(angle)
         s = np.sin(angle)
 
@@ -59,29 +59,29 @@ class Coord:
         return Coord(xr, yr)
 
 class Polygon:
-    def __init__(self, coords: List[Coord]):
+    def __init__(self, coords: Sequence[Coord]):
         self.coords = coords
 
-    def __add__(self, d: Coord):
+    def __add__(self, d: Coord) -> Polygon:
         return Polygon([c+d for c in self.coords])
 
-    def __sub__(self, d: Coord):
+    def __sub__(self, d: Coord) -> Polygon:
         return Polygon([c-d for c in self.coords])
 
-    def rotate(self, angle: float):
+    def rotate(self, angle: float) -> Polygon:
         return Polygon([c.rotate(angle) for c in self.coords])
 
-    def export_int(self):
+    def export_int(self) -> Sequence[Tuple[int, int]]:
         return [c.export_int() for c in self.coords]
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx: int) -> Coord:
         if idx >= len(self.coords):
             raise IndexError(f'polygon has {len(self.coords)} coords, requested index {idx} is out of range')
 
         return self.coords[idx]
 
 class Beam:
-    def __init__(self, config: 'Config', c0: Coord, c1: Coord):
+    def __init__(self, config: Config, c0: Coord, c1: Coord):
         self.config = config
         self.start = c0
         self.go_right = c1.x >= c0.x
@@ -123,7 +123,9 @@ class Beam:
         return Coord(x, y)
 
 class Car:
-    def __init__(self, config: 'Config', center: Coord, angle: float, window: pygame.Surface):
+    coords: Polygon
+
+    def __init__(self, config: Config, center: Coord, angle: float, window: Optional[pygame.Surface]) -> None:
         self.config = config
         self.center = center
         self.angle = angle
@@ -136,10 +138,10 @@ class Car:
 
         self.update_coords()
 
-    def crash(self):
+    def crash(self) -> None:
         self.is_dead = True
 
-    def get_polygon(self):
+    def get_polygon(self) -> Polygon:
         return self.coords
 
     def update_coords(self) -> None:
@@ -157,12 +159,12 @@ class Car:
         self.rotate(self.angle)
         self.run_beams()
 
-    def rotate(self, angle):
-        self.coords -= self.center
+    def rotate(self, angle) -> None:
+        self.coords -= self.center # pytype: disable=attribute-error
         self.coords = self.coords.rotate(angle)
         self.coords += self.center
 
-    def run_beams(self):
+    def run_beams(self) -> None:
         c0 = self.coords[0]
         c1 = self.coords[1]
         c2 = self.coords[2]
@@ -181,7 +183,7 @@ class Car:
 
             self.endpoints.append(endpoint)
 
-    def step(self, acceleration_value, rotation_value):
+    def step(self, acceleration_value, rotation_value) -> None:
         if self.is_dead:
             return
 
@@ -208,7 +210,7 @@ class Car:
         self.update_coords()
         self.run_beams()
 
-    def render(self):
+    def render(self) -> None:
         colour = self.config.car_colour
         if self.is_dead:
             colour = self.config.dead_car_colour
@@ -249,6 +251,10 @@ class Config:
     acceleration_value_max = 0.2
 
 class MapGame:
+    window: pygame.Surface
+    bg_surf: pygame.Surface
+    clock: pygame.time.Clock
+
     def __init__(self, config: Config):
         self.config = config
 
@@ -306,7 +312,7 @@ class MapGame:
                     car.crash()
                     break
 
-def main():
+def main() -> Any:
     config = Config()
     config.image_path = FLAGS.map_image
 
