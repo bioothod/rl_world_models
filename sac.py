@@ -38,56 +38,6 @@ class Critic(tf.keras.Model):
         x = self.dense2(x)
         return x
 
-def gaussian_likelihood(input_, mu_, log_std, epsilon):
-    """
-    Helper to computer log likelihood of a gaussian.
-    Here we assume this is a Diagonal Gaussian.
-
-    :param input_: (tf.Tensor)
-    :param mu_: (tf.Tensor)
-    :param log_std: (tf.Tensor)
-    :return: (tf.Tensor)
-    """
-    return -0.5 * (((input_ - mu_) / (tf.exp(log_std) + epsilon)) ** 2 + 2 * log_std + np.log(2 * np.pi))
-
-
-def gaussian_entropy(log_std):
-    """
-    Compute the entropy for a diagonal gaussian distribution.
-
-    :param log_std: (tf.Tensor) Log of the standard deviation
-    :return: (tf.Tensor)
-    """
-    return tf.reduce_sum(log_std + 0.5 * np.log(2.0 * np.pi * np.e), axis=-1)
-
-
-def clip_but_pass_gradient(input_, lower=-1., upper=1.):
-    clip_up = tf.cast(input_ > upper, tf.float32)
-    clip_low = tf.cast(input_ < lower, tf.float32)
-    return input_ + tf.stop_gradient((upper - input_) * clip_up + (lower - input_) * clip_low)
-
-def apply_squashing_func(mu_, pi_, logp_pi, epsilon):
-    """
-    Squash the output of the Gaussian distribution
-    and account for that in the log probability
-    The squashed mean is also returned for using
-    deterministic actions.
-
-    :param mu_: (tf.Tensor) Mean of the gaussian
-    :param pi_: (tf.Tensor) Output of the policy before squashing
-    :param logp_pi: (tf.Tensor) Log probability before squashing
-    :return: ([tf.Tensor])
-    """
-    # Squash the output
-    deterministic_policy = tf.tanh(mu_)
-    policy = tf.tanh(pi_)
-    # OpenAI Variation:
-    # To avoid evil machine precision error, strictly clip 1-pi**2 to [0,1] range.
-    # logp_pi -= tf.reduce_sum(tf.log(clip_but_pass_gradient(1 - policy ** 2, lower=0, upper=1) + EPS), axis=1)
-    # Squash correction (from original implementation)
-    logp_pi -= tf.math.reduce_sum(tf.math.log(1 - tf.math.pow(policy, 2) + epsilon), axis=1, keepdims=True)
-    return deterministic_policy, policy, logp_pi
-
 class Actor(tf.keras.Model):
     def __init__(self,
             hidden_size: int,
@@ -133,7 +83,7 @@ class Actor(tf.keras.Model):
         action = tf.math.tanh(action_unscaled)
 
         log_prob = dist.log_prob(action_unscaled) - tf.math.log(1 - tf.math.pow(action, 2) + epsilon)
-        #entropy = gaussian_entropy(log_std)
+        log_prob = tf.reduce_sum(log_prob, axis=1, keepdims=True)
 
         return action, log_prob
 
@@ -421,7 +371,7 @@ def main(env):
     hidden_size = 128
     batch_size = 512
 
-    replay_buffer_size = 20000
+    replay_buffer_size = 10000
     warmup_sample_steps = 2000
     soft_tau = 5e-3
 
