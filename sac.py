@@ -11,6 +11,7 @@ import numpy as np
 import tensorflow as tf
 import tensorflow_addons as tfa
 import tensorflow_probability as tfp
+tfd = tfp.distributions
 
 from utils.gym import is_continuous_space, is_discrete_space
 from replay_buffer import StateReplayBuffer, ReplayBuffer
@@ -22,20 +23,16 @@ class Critic(tf.keras.Model):
         super().__init__(**kwargs)
 
         self.dense0 = tf.keras.layers.Dense(hidden_size, name=f'{self.name}/dense0')
-        #self.norm0 = tf.keras.layers.LayerNormalization()
         self.dense1 = tf.keras.layers.Dense(hidden_size, name=f'{self.name}/dense1')
-        #self.norm1 = tf.keras.layers.LayerNormalization()
         self.dense2 = tf.keras.layers.Dense(1, name=f'{self.name}/dense2')
 
     def __call__(self, states: tf.Tensor, actions: tf.Tensor) -> tf.Tensor:
         x = tf.concat([states, actions], 1)
 
         x = self.dense0(x)
-        #x = self.norm0(x)
         x = tf.nn.relu(x)
 
         x = self.dense1(x)
-        #x = self.norm1(x)
         x = tf.nn.relu(x)
 
         x = self.dense2(x)
@@ -104,20 +101,16 @@ class Actor(tf.keras.Model):
         self.log_std_max = log_std_max
 
         self.dense0 = tf.keras.layers.Dense(hidden_size, name=f'{self.name}/dense0')
-        #self.norm0 = tf.keras.layers.LayerNormalization()
         self.dense1 = tf.keras.layers.Dense(hidden_size, name=f'{self.name}/dense1')
-        #self.norm1 = tf.keras.layers.LayerNormalization()
 
         self.mean_linear = tf.keras.layers.Dense(num_actions, name=f'{self.name}/mean_linear')
         self.log_std_linear = tf.keras.layers.Dense(num_actions, name=f'{self.name}/log_std_linear')
 
     def __call__(self, inputs: tf.Tensor) -> Tuple[tf.Tensor, tf.Tensor]:
         x = self.dense0(inputs)
-        #x = self.norm0(x)
         x = tf.nn.relu(x)
 
         x = self.dense1(x)
-        #x = self.norm1(x)
         x = tf.nn.relu(x)
 
         mean = self.mean_linear(x)
@@ -126,29 +119,31 @@ class Actor(tf.keras.Model):
 
         return mean, log_std
 
-    @tf.function
-    def get_actions_raw(self, states: tf.Tensor) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
+    def dist(self, states):
         mean, log_std = self(states)
         std = tf.math.exp(log_std)
 
-        randoms = tf.random.normal(tf.shape(mean))
-        action_unscaled = mean + randoms * std
-        action = tf.math.tanh(action_unscaled)
-
-        return action_unscaled, action, mean, log_std, std
+        #dist = tfd.MultivariateNormalDiag(loc=mean, scale_diag=std)
+        dist = tfd.Normal(loc=mean, scale=std)
+        return dist
 
     def action_log_prob(self, states: tf.Tensor, epsilon: float = 1e-8) -> Tuple[tf.Tensor, tf.Tensor]:
-        action_unscaled, action, mean, log_std, std = self.get_actions_raw(states)
+        dist = self.dist(states)
+        action_unscaled = dist.sample()
+        action = tf.math.tanh(action_unscaled)
 
-        log_prob = gaussian_likelihood(action_unscaled, mean, log_std, epsilon)
-        action, policy, log_prob = apply_squashing_func(mean, action_unscaled, log_prob, epsilon)
+        log_prob = dist.log_prob(action_unscaled) - tf.math.log(1 - tf.math.pow(action, 2) + epsilon)
         #entropy = gaussian_entropy(log_std)
 
         return action, log_prob
 
     def get_action(self, state: tf.Tensor) -> tf.Tensor:
         states = tf.expand_dims(state, 0)
-        action_unscaled, action, mean, log_std, std = self.get_actions_raw(states)
+        dist = self.dist(states)
+
+        action_unscaled = dist.sample()
+        action = tf.math.tanh(action_unscaled)
+
         action = tf.squeeze(action, 1)
         return action
 
@@ -423,7 +418,7 @@ def main(env):
 
     max_steps_per_episode = 1000
 
-    hidden_size = 256
+    hidden_size = 128
     batch_size = 512
 
     replay_buffer_size = 20000
