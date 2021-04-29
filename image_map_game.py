@@ -9,12 +9,6 @@ import pygame
 import matplotlib.pyplot as plt
 import numpy as np
 
-parser = argparse.ArgumentParser()
-parser.add_argument('--map_image', type=str, required=True, help='Map image')
-parser.add_argument('--num_cars', type=int, default=1, help='Number of cars on the map')
-parser.add_argument('--output_dir', type=str, help='When set, save rendered frames there')
-FLAGS = parser.parse_args()
-
 class Coord:
     def __init__(self, x: float, y: float):
         self.x = float(x)
@@ -210,6 +204,13 @@ class Car:
         self.update_coords()
         self.run_beams()
 
+    def current_state(self) -> Tuple[float, float, float, float, ...]:
+        flat_beam_intersections = []
+        for ep in self.endpoints:
+            flat_beam_intersections += [ep.x, ep.y]
+
+        return [self.center.x, self.center.y, self.angle, self.velocity] + flat_beam_intersections
+
     def render(self) -> None:
         colour = self.config.car_colour
         if self.is_dead:
@@ -258,7 +259,7 @@ class MapGame:
     def __init__(self, config: Config):
         self.config = config
 
-        self.cars = []
+        self.reset()
 
         self.image = PIL.Image.open(self.config.image_path)
         config.image_map = self.image
@@ -267,9 +268,14 @@ class MapGame:
         self.config.image_width = bbox[2]
         self.config.image_height = bbox[3]
 
+        self.start_min, self.start_max = self.locate_start()
+
     def locate_start(self) -> Tuple[Coord, Coord]:
         a = np.asarray(self.image)
         start = np.nonzero((a[:, :, 0] == self.config.start_colour[0]) & (a[:, :, 1] == self.config.start_colour[1]) & (a[:, :, 2] == self.config.start_colour[2]))
+        if len(start[0]) == 0:
+            raise ValueError(f'could not locate start position, start_colour: {self.config.start_colour}')
+
         min_x = start[1].min()
         min_y = start[0].min()
         max_x = start[1].max()
@@ -278,6 +284,16 @@ class MapGame:
         min_c = Coord(min_x, min_y)
         max_c = Coord(max_x, max_y)
         return (min_c, max_c)
+
+    def add_cars(self, num_cars):
+        diff_x = self.start_max.x - self.start_min.x
+        diff_y = self.start_max.y - self.start_min.y
+
+        step_x = diff_x / num_cars
+        step_y = diff_y / num_cars
+        for i in range(num_cars):
+            c = min_c + Coord((step_x + config.car_width)*i, step_y*i)
+            self.add_car(c)
 
     def add_car(self, coord: Coord) -> None:
         angle = -90
@@ -300,9 +316,19 @@ class MapGame:
 
         pygame.display.update()
 
-    def step(self) -> None:
-        for car in self.cars:
-            car.step(acceleration_value=0.01, rotation_value=0.001)
+    def reset(self) -> None:
+        self.cars = []
+
+    def current_state(self):
+        states = []
+        for car in cars:
+            states.append(car.current_state)
+
+        return np.array(states, np.float32)
+
+    def step(self, actions) -> None:
+        for car, action in (self.cars, actions):
+            car.step(acceleration_value=action[0], rotation_value=action[1])
 
         for car in self.cars:
             coords = car.get_polygon()
@@ -313,22 +339,18 @@ class MapGame:
                     break
 
 def main() -> Any:
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--map_image', type=str, required=True, help='Map image')
+    parser.add_argument('--num_cars', type=int, default=1, help='Number of cars on the map')
+    parser.add_argument('--output_dir', type=str, help='When set, save rendered frames there')
+    FLAGS = parser.parse_args()
+
     config = Config()
     config.image_path = FLAGS.map_image
 
     map_game = MapGame(config)
     map_game.init_render()
-
-    min_c, max_c = map_game.locate_start()
-    diff_x = max_c.x - min_c.x
-    diff_y = max_c.y - min_c.y
-
-    num_cars = 3
-    step_x = diff_x / num_cars
-    step_y = diff_y / num_cars
-    for i in range(num_cars):
-        c = min_c + Coord((step_x + config.car_width)*i, step_y*i)
-        map_game.add_car(c)
+    map_game.add_cars(FLAGS.num_cars)
 
     run = True
     step = 0
