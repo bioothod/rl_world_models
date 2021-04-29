@@ -101,8 +101,7 @@ def heuristic_target_entropy(action_space):
     if is_continuous_space(action_space):
         heuristic_target_entropy = -np.prod(action_space.shape)
     elif is_discrete_space(action_space):
-        raise NotImplementedError(
-            "TODO(hartikainen): implement for discrete spaces.")
+        raise NotImplementedError('Discrete action space is not supported')
     else:
         raise NotImplementedError((type(action_space), action_space))
 
