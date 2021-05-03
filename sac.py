@@ -38,12 +38,65 @@ class Critic(tf.keras.Model):
         x = self.dense2(x)
         return x
 
+EPSILON = 1e-8
+
+def gaussian_likelihood(input_, mu_, log_std):
+    """
+    Helper to computer log likelihood of a gaussian.
+    Here we assume this is a Diagonal Gaussian.
+
+    :param input_: (tf.Tensor)
+    :param mu_: (tf.Tensor)
+    :param log_std: (tf.Tensor)
+    :return: (tf.Tensor)
+    """
+    return -0.5 * (((input_ - mu_) / (tf.exp(log_std) + EPSILON)) ** 2 + 2 * log_std + np.log(2 * np.pi))
+
+
+def gaussian_entropy(log_std):
+    """
+    Compute the entropy for a diagonal gaussian distribution.
+
+    :param log_std: (tf.Tensor) Log of the standard deviation
+    :return: (tf.Tensor)
+    """
+    return tf.reduce_sum(log_std + 0.5 * np.log(2.0 * np.pi * np.e), axis=-1)
+
+
+def clip_but_pass_gradient(input_, lower=-1., upper=1.):
+    clip_up = tf.cast(input_ > upper, tf.float32)
+    clip_low = tf.cast(input_ < lower, tf.float32)
+    return input_ + tf.stop_gradient((upper - input_) * clip_up + (lower - input_) * clip_low)
+
+def apply_squashing_func(mu_, pi_, logp_pi):
+    """
+    Squash the output of the Gaussian distribution
+    and account for that in the log probability
+    The squashed mean is also returned for using
+    deterministic actions.
+
+    :param mu_: (tf.Tensor) Mean of the gaussian
+    :param pi_: (tf.Tensor) Output of the policy before squashing
+    :param logp_pi: (tf.Tensor) Log probability before squashing
+    :return: ([tf.Tensor])
+    """
+    # Squash the output
+    deterministic_policy = tf.tanh(mu_)
+    policy = tf.tanh(pi_)
+    # OpenAI Variation:
+    # To avoid evil machine precision error, strictly clip 1-pi**2 to [0,1] range.
+    # logp_pi -= tf.reduce_sum(tf.log(clip_but_pass_gradient(1 - policy ** 2, lower=0, upper=1) + EPS), axis=1)
+    # Squash correction (from original implementation)
+    logp_pi -= tf.math.reduce_sum(tf.math.log(1 - tf.math.pow(policy, 2) + EPSILON), axis=1, keepdims=True)
+    return deterministic_policy, policy, logp_pi
+
+
 class Actor(tf.keras.Model):
     def __init__(self,
             hidden_size: int,
             num_actions: int,
-            log_std_min: float = -20,
-            log_std_max: float = 2,
+            log_std_min: float = -1e10,
+            log_std_max: float = 1,
             **kwargs):
         super().__init__(**kwargs)
 
@@ -53,7 +106,7 @@ class Actor(tf.keras.Model):
         self.dense0 = tf.keras.layers.Dense(hidden_size, name=f'{self.name}/dense0')
         self.dense1 = tf.keras.layers.Dense(hidden_size, name=f'{self.name}/dense1')
 
-        self.mean_linear = tf.keras.layers.Dense(num_actions, name=f'{self.name}/mean_linear')
+        self.mean_linear = tf.keras.layers.Dense(num_actions, activation='tanh', name=f'{self.name}/mean_linear')
         self.log_std_linear = tf.keras.layers.Dense(num_actions, name=f'{self.name}/log_std_linear')
 
     def __call__(self, inputs: tf.Tensor) -> Tuple[tf.Tensor, tf.Tensor]:
@@ -61,7 +114,7 @@ class Actor(tf.keras.Model):
         x = tf.nn.relu(x)
 
         x = self.dense1(x)
-        x = tf.nn.relu(x)
+        x = tf.math.tanh(x)
 
         mean = self.mean_linear(x)
         log_std = self.log_std_linear(x)
@@ -69,32 +122,35 @@ class Actor(tf.keras.Model):
 
         return mean, log_std
 
-    def dist(self, states):
+    def action_log_prob(self, states: tf.Tensor) -> Tuple[tf.Tensor, tf.Tensor]:
         mean, log_std = self(states)
         std = tf.math.exp(log_std)
 
         #dist = tfd.MultivariateNormalDiag(loc=mean, scale_diag=std)
         dist = tfd.Normal(loc=mean, scale=std)
-        return dist
 
-    def action_log_prob(self, states: tf.Tensor, epsilon: float = 1e-8) -> Tuple[tf.Tensor, tf.Tensor]:
-        dist = self.dist(states)
         action_unscaled = dist.sample()
+        #action_unscaled = tf.clip_by_value(action_unscaled, -1e10, 0.5)
+
+        log_prob_sample = gaussian_likelihood(action_unscaled, mean, log_std)
+
         action = tf.math.tanh(action_unscaled)
 
-        log_prob = dist.log_prob(action_unscaled) - tf.math.log(1 - tf.math.pow(action, 2) + epsilon)
-        log_prob = tf.reduce_sum(log_prob, axis=1, keepdims=True)
+        log_prob = log_prob_sample - tf.reduce_sum(tf.math.log(clip_but_pass_gradient(1 - action ** 2, lower=0, upper=1) + EPSILON), axis=1, keepdims=True)
+
+        #tf.print('dist max: states: ', tf.reduce_max(states), 'mean: ', tf.reduce_max(mean), ', log_std:', tf.reduce_max(log_std), 'action_unscaled:', tf.reduce_max(action_unscaled), ', action:', tf.reduce_max(action), ', log_prob:', tf.reduce_max(log_prob), ', log_prob_sample:', tf.reduce_max(log_prob_sample))
+
+        #log_prob = log_prob_sample - tf.math.log(1 - tf.math.pow(action, 2) + EPSILON)
+        #log_prob = tf.reduce_sum(log_prob, axis=1, keepdims=True)
 
         return action, log_prob
 
     def get_action(self, state: tf.Tensor) -> tf.Tensor:
         states = tf.expand_dims(state, 0)
-        dist = self.dist(states)
+        action, _ = self.action_log_prob(states)
 
-        action_unscaled = dist.sample()
-        action = tf.math.tanh(action_unscaled)
-
-        action = tf.squeeze(action, 1)
+        #action = tf.squeeze(action, 1)
+        action = tf.squeeze(action, 0)
         return action
 
 def heuristic_target_entropy(action_space):
@@ -387,8 +443,9 @@ def main(env):
             warmup_sample_steps = warmup_sample_steps,
     )
 
+    max_episode_reward = -1
     rewards = []
-    for episode in range(1000):
+    for episode in range(100000):
         initial_state = env.reset()
         initial_state = initial_state.astype(np_dtype)
 
@@ -404,11 +461,24 @@ def main(env):
         q_logs = [f'q{q_idx}: {q.result():2.4f}' for q_idx, q in enumerate(sac.q_metrics)]
         q_log = ', '.join(q_logs)
 
-        logger.info(f'{episode:4d}: step: {sac.global_step.numpy():5d}, episode_reward: {episode_reward:5.2f}, avg_reward: {avg_reward:5.2f}, losses: '
+        logger.info(f'{episode:4d}: step: {sac.global_step.numpy():5d}, episode_reward: {episode_reward:5.2f}/{max_episode_reward:5.2f}, avg_reward: {avg_reward:5.2f}, losses: '
                 f'policy: {sac.policy_metric.result():3.4f}, '
                 f'{q_log}, '
                 f'alpha: {sac.alpha_metric.result():2.4f}, '
                 f'entropy: {tf.convert_to_tensor(sac.alpha).numpy():.4f}')
+
+        if episode_reward > max_episode_reward:
+            max_episode_reward = episode_reward
+
+            done = False
+            state = env.reset()
+
+            step = 0
+            while not done:
+                actions = sac.policy.get_action(state)
+                state, reward, done, _ = env.step(actions)
+                env.render(episode, step)
+                step += 1
 
 class NormalizedActions(gym.ActionWrapper):
     def action(self, action):
@@ -423,7 +493,7 @@ class NormalizedActions(gym.ActionWrapper):
     def reverse_action(self, action):
         low  = self.action_space.low
         high = self.action_space.high
-        
+
         action = 2 * (action - low) / (high - low) - 1
         action = np.clip(action, low, high)
         
@@ -431,7 +501,11 @@ class NormalizedActions(gym.ActionWrapper):
 
 if __name__ == "__main__":
     #env = NormalizedActions(gym.make("Pendulum-v0"))
-    env = gym.make("Pendulum-v0")
+    #env = gym.make("Pendulum-v0")
+
+    if True:
+        import image_map_env
+        env = image_map_env.CustomEnv('maps/map_simple0.png')
 
     seed = 42
     env.seed(seed)

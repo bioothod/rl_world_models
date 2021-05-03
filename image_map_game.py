@@ -35,7 +35,7 @@ class Coord:
         return Coord(x, y)
 
     def __repr__(self) -> str:
-        return f'({self.x:d}.{self.y:d})'
+        return f'({self.x:.1f}.{self.y:.1f})'
 
     def export(self) -> Tuple[float, float]:
         return (self.x, self.y)
@@ -98,7 +98,7 @@ class Beam:
         step = 1
         while self.coord_is_ok(x, y):
             p = self.config.image_map.getpixel((x, y))
-            if p == self.config.nonroad_colour:
+            if p in self.config.obstacle_colours:
                 break
 
             if self.go_right:
@@ -178,6 +178,7 @@ class Car:
             self.endpoints.append(endpoint)
 
     def step(self, acceleration_value, rotation_value) -> None:
+        #print(f'acceleration_value: {acceleration_value}, rotation_value: {rotation_value}')
         if self.is_dead:
             return
 
@@ -191,7 +192,13 @@ class Car:
             acceleration_value = acceleration_value * self.config.backward_acceleration_ratio
 
         self.angle += self.steering_angle
+        self.angle %= np.pi
+
         self.velocity += acceleration_value
+        if self.velocity > 1:
+            self.velocity = 1
+        if self.velocity < -1:
+            self.velocity = -1
 
         vel_x = self.velocity * np.cos(self.angle)
         vel_y = self.velocity * np.sin(self.angle)
@@ -201,15 +208,24 @@ class Car:
         off = Coord(vel_x*step, vel_y*step)
 
         self.center += off
+        if self.center.x > self.config.image_width:
+            self.center.x = self.config.image_width
+        if self.center.y > self.config.image_height:
+            self.center.y = self.config.image_height
+
         self.update_coords()
         self.run_beams()
 
-    def current_state(self) -> Tuple[float, float, float, float, ...]:
+    def current_state(self):
+        def point_norm(c):
+            return [c.x / self.config.image_width, c.y / self.config.image_height]
+
         flat_beam_intersections = []
         for ep in self.endpoints:
-            flat_beam_intersections += [ep.x, ep.y]
+            flat_beam_intersections += point_norm(ep)
 
-        return [self.center.x, self.center.y, self.angle, self.velocity] + flat_beam_intersections
+        #return np.array(point_norm(self.center) + [self.angle, self.velocity] + flat_beam_intersections)
+        return np.array(point_norm(self.center) + [self.angle, self.velocity])
 
     def render(self) -> None:
         colour = self.config.car_colour
@@ -228,6 +244,8 @@ class Config:
     image_width = None
     image_height = None
 
+    output_dir = '/home/zbr/awork/rl/world_model/outputs/simple_map'
+
     car_width = 3
     car_length = 8
 
@@ -237,7 +255,13 @@ class Config:
     nonroad_colour = (255, 255, 255)
     car_colour = (255, 65, 0)
     beam_colour = (175, 65, 255)
-    dead_car_colour = (255, 0, 0)
+    dead_car_colour = (0, 0, 0)
+    goal_colour = (0, 0, 255)
+
+    goal = Coord(569, 338)
+
+    obstacle_colours = [nonroad_colour, car_colour, dead_car_colour]
+    road_colours = [start_colour, goal_colour]
 
     backward_acceleration_ratio = 0.5
 
@@ -268,6 +292,7 @@ class MapGame:
         self.config.image_width = bbox[2]
         self.config.image_height = bbox[3]
 
+        self.goal = config.goal
         self.start_min, self.start_max = self.locate_start()
 
     def locate_start(self) -> Tuple[Coord, Coord]:
@@ -292,11 +317,12 @@ class MapGame:
         step_x = diff_x / num_cars
         step_y = diff_y / num_cars
         for i in range(num_cars):
-            c = min_c + Coord((step_x + config.car_width)*i, step_y*i)
+            c = self.start_min + Coord((step_x)*i, (step_y + self.config.car_width*2)*i)
             self.add_car(c)
 
     def add_car(self, coord: Coord) -> None:
-        angle = -90
+        #angle = -90
+        angle = 0
         angle = angle * np.pi / 180.
         c = Car(self.config, coord, angle, self.window)
         self.cars.append(c)
@@ -314,6 +340,7 @@ class MapGame:
         for car in self.cars:
             car.render()
 
+        pygame.draw.circle(self.window, self.config.goal_colour, self.goal.export_int(), 5)
         pygame.display.update()
 
     def reset(self) -> None:
@@ -321,20 +348,29 @@ class MapGame:
 
     def current_state(self):
         states = []
-        for car in cars:
-            states.append(car.current_state)
+        for car in self.cars:
+            states.append(car.current_state())
 
-        return np.array(states, np.float32)
+        return np.vstack(states)
 
     def step(self, actions) -> None:
-        for car, action in (self.cars, actions):
+        for car, action in zip(self.cars, actions):
             car.step(acceleration_value=action[0], rotation_value=action[1])
 
         for car in self.cars:
             coords = car.get_polygon()
             for c in coords:
-                p = self.config.image_map.getpixel((c.x, c.y))
-                if p == self.config.nonroad_colour:
+                if c.x >= self.config.image_width or c.y >= self.config.image_height:
+                    car.crash()
+                    break
+
+                try:
+                    p = self.config.image_map.getpixel((c.x, c.y))
+                except:
+                    print(f'exception: c: {c}, width: {self.config.image_width}, height: {self.config.image_height}')
+                    raise
+
+                if p in self.config.obstacle_colours:
                     car.crash()
                     break
 
@@ -377,7 +413,8 @@ def main() -> Any:
         #environment.step(action)
         # render current state
 
-        map_game.step()
+        actions = [[0.01, 0.01]]*FLAGS.num_cars
+        map_game.step(actions)
         map_game.render()
 
         if FLAGS.output_dir:
