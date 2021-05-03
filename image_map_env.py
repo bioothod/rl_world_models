@@ -55,7 +55,7 @@ class CustomEnv(gym.Env):
                     reward = 1.
                     done = True
                 else:
-                    reward = 1. - dist / orig_dist - 0.01
+                    reward = 1. - dist / orig_dist - 0.03
 
             rewards.append(reward)
             dones.append(done)

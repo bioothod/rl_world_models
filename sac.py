@@ -443,7 +443,7 @@ def main(env):
             warmup_sample_steps = warmup_sample_steps,
     )
 
-    max_episode_reward = -1
+    max_episode_reward = -100
     rewards = []
     for episode in range(100000):
         initial_state = env.reset()
