@@ -3,8 +3,10 @@
 from numbers import Number
 from typing import *
 
+from datetime import datetime
 import gym
 import logging
+import os
 import random
 
 import numpy as np
@@ -19,23 +21,23 @@ from replay_buffer import StateReplayBuffer, ReplayBuffer
 logger = logging.getLogger('sac')
 
 class Critic(tf.keras.Model):
-    def __init__(self, hidden_size: int, **kwargs):
+    def __init__(self, hidden_layers: Sequence[int], **kwargs):
         super().__init__(**kwargs)
 
-        self.dense0 = tf.keras.layers.Dense(hidden_size, name=f'{self.name}/dense0')
-        self.dense1 = tf.keras.layers.Dense(hidden_size, name=f'{self.name}/dense1')
-        self.dense2 = tf.keras.layers.Dense(1, name=f'{self.name}/dense2')
+        self.dense_layers = []
+        for i, hidden_size in enumerate(hidden_layers):
+            d = tf.keras.layers.Dense(hidden_size, activation='relu', name=f'{self.name}/dense{i}')
+            self.dense_layers.append(d)
+
+        self.dense_out = tf.keras.layers.Dense(1, name=f'{self.name}/dense_out')
 
     def __call__(self, states: tf.Tensor, actions: tf.Tensor) -> tf.Tensor:
         x = tf.concat([states, actions], 1)
 
-        x = self.dense0(x)
-        x = tf.nn.relu(x)
+        for dense_layer in self.dense_layers:
+            x = dense_layer(x)
 
-        x = self.dense1(x)
-        x = tf.nn.relu(x)
-
-        x = self.dense2(x)
+        x = self.dense_out(x)
         return x
 
 EPSILON = 1e-8
@@ -93,7 +95,7 @@ def apply_squashing_func(mu_, pi_, logp_pi):
 
 class Actor(tf.keras.Model):
     def __init__(self,
-            hidden_size: int,
+            hidden_layers: Sequence[int],
             num_actions: int,
             log_std_min: float = -1e10,
             log_std_max: float = 1,
@@ -103,18 +105,19 @@ class Actor(tf.keras.Model):
         self.log_std_min = log_std_min
         self.log_std_max = log_std_max
 
-        self.dense0 = tf.keras.layers.Dense(hidden_size, name=f'{self.name}/dense0')
-        self.dense1 = tf.keras.layers.Dense(hidden_size, name=f'{self.name}/dense1')
+        self.dense_layers = []
+        for i, hidden_size in enumerate(hidden_layers):
+            d = tf.keras.layers.Dense(hidden_size, activation='relu', name=f'{self.name}/dense{i}')
+            self.dense_layers.append(d)
 
-        self.mean_linear = tf.keras.layers.Dense(num_actions, activation='tanh', name=f'{self.name}/mean_linear')
+        self.mean_linear = tf.keras.layers.Dense(num_actions, name=f'{self.name}/mean_linear')
         self.log_std_linear = tf.keras.layers.Dense(num_actions, name=f'{self.name}/log_std_linear')
 
     def __call__(self, inputs: tf.Tensor) -> Tuple[tf.Tensor, tf.Tensor]:
-        x = self.dense0(inputs)
-        x = tf.nn.relu(x)
+        x = inputs
 
-        x = self.dense1(x)
-        x = tf.math.tanh(x)
+        for dense_layer in self.dense_layers:
+            x = dense_layer(x)
 
         mean = self.mean_linear(x)
         log_std = self.log_std_linear(x)
@@ -130,7 +133,6 @@ class Actor(tf.keras.Model):
         dist = tfd.Normal(loc=mean, scale=std)
 
         action_unscaled = dist.sample()
-        #action_unscaled = tf.clip_by_value(action_unscaled, -1e10, 0.5)
 
         log_prob_sample = gaussian_likelihood(action_unscaled, mean, log_std)
 
@@ -166,7 +168,8 @@ def heuristic_target_entropy(action_space):
 class SoftActorCritic:
     def __init__(self,
             env,
-            hidden_size: int,
+            actor_hidden_layers: Sequence[int],
+            critic_hidden_layers: Sequence[int],
             batch_size: int,
             initial_learning_rate: float = 1e-2,
             min_learning_rate: float = 1e-5,
@@ -211,8 +214,8 @@ class SoftActorCritic:
         self.q_opts = []
         self.q_metrics = []
         for idx in range(num_qs):
-            q = Critic(hidden_size, name=f'q{idx}')
-            tq = Critic(hidden_size, name=f'target_q{idx}')
+            q = Critic(critic_hidden_layers, name=f'q{idx}')
+            tq = Critic(critic_hidden_layers, name=f'target_q{idx}')
 
             self.update_weights(tq, q, 1)
 
@@ -223,7 +226,7 @@ class SoftActorCritic:
             self.q_opts.append(self.create_optimizer())
 
 
-        self.policy = Actor(hidden_size, num_actions, name='policy')
+        self.policy = Actor(actor_hidden_layers, num_actions, name='policy')
         self.policy_metric = tf.keras.metrics.Mean()
         self.policy_opt = self.create_optimizer()
 
@@ -289,7 +292,7 @@ class SoftActorCritic:
                 q_loss = tf.nn.compute_average_loss(q_losses)
 
             grads = tape.gradient(q_loss, q.trainable_variables)
-            #grads, _ = tf.clip_by_global_norm(grads, self.gradient_norm_clip)
+            grads, _ = tf.clip_by_global_norm(grads, self.gradient_norm_clip)
             opt.apply_gradients(zip(grads, q.trainable_variables))
 
             metric.update_state(q_loss)
@@ -311,7 +314,7 @@ class SoftActorCritic:
             policy_loss = tf.nn.compute_average_loss(policy_losses)
 
         grads = tape.gradient(policy_loss, self.policy.trainable_variables)
-        #grads, _ = tf.clip_by_global_norm(grads, self.gradient_norm_clip)
+        grads, _ = tf.clip_by_global_norm(grads, self.gradient_norm_clip)
         self.policy_opt.apply_gradients(zip(grads, self.policy.trainable_variables))
 
         self.policy_metric.update_state(policy_loss)
@@ -331,7 +334,7 @@ class SoftActorCritic:
 
         variables = [self.log_alpha]
         grads = tape.gradient(alpha_loss, variables)
-        #grads, _ = tf.clip_by_global_norm(grads, self.gradient_norm_clip)
+        grads, _ = tf.clip_by_global_norm(grads, self.gradient_norm_clip)
         self.alpha_opt.apply_gradients(zip(grads, variables))
 
         self.alpha_metric.update_state(alpha_loss)
@@ -406,7 +409,7 @@ def main(env):
         tf.config.experimental.set_memory_growth(gpu, True)
 
     use_fp16 = False
-    initial_learning_rate = 3e-4
+    initial_learning_rate = 1e-4
     min_learning_rate = 1e-5
 
     dtype = tf.float32
@@ -418,30 +421,35 @@ def main(env):
         policy = tf.keras.mixed_precision.Policy('mixed_float16')
         tf.keras.mixed_precision.set_global_policy(policy)
 
-    #checkpoint = tf.train.Checkpoint(step=global_step, epoch=epoch_var, optimizer=opt, model=model)
-    #manager = tf.train.CheckpointManager(checkpoint, checkpoint_dir, max_to_keep=20)
-
     max_steps_per_episode = 1000
 
-    hidden_size = 128
-    batch_size = 512
+    actor_hidden_layers = [512, 512, 512, 512]
+    critic_hidden_layers = [512, 512, 512, 512]
+    batch_size = 1024
 
-    replay_buffer_size = 10000
-    warmup_sample_steps = 2000
+    replay_buffer_size = 30000
+    warmup_sample_steps = 5000
     soft_tau = 5e-3
+
+    now = datetime.now()
+    good_checkpoint_dir = os.path.join('checkpoints', now.strftime("%Y.%m.%d_%H:%M:%S"))
+    os.makedirs(good_checkpoint_dir, exist_ok=True)
 
     sac = SoftActorCritic(
             env = env,
-            hidden_size = hidden_size,
-            batch_size = batch_size,
-            initial_learning_rate = initial_learning_rate,
-            min_learning_rate = min_learning_rate,
-            dtype = dtype,
-            soft_tau = soft_tau,
-            replay_buffer_size = replay_buffer_size,
-            max_steps_per_episode = max_steps_per_episode,
-            warmup_sample_steps = warmup_sample_steps,
+            actor_hidden_layers=actor_hidden_layers,
+            critic_hidden_layers=critic_hidden_layers,
+            batch_size=batch_size,
+            initial_learning_rate=initial_learning_rate,
+            min_learning_rate=min_learning_rate,
+            dtype=dtype,
+            soft_tau=soft_tau,
+            replay_buffer_size=replay_buffer_size,
+            max_steps_per_episode=max_steps_per_episode,
+            warmup_sample_steps=warmup_sample_steps,
     )
+
+    checkpoint = tf.train.Checkpoint(step=sac.global_step, epoch=sac.epoch_var, policy=sac.policy, qs=sac.qs, log_alpha=sac.log_alpha)
 
     max_episode_reward = -100
     rewards = []
@@ -467,18 +475,25 @@ def main(env):
                 f'alpha: {sac.alpha_metric.result():2.4f}, '
                 f'entropy: {tf.convert_to_tensor(sac.alpha).numpy():.4f}')
 
-        if episode_reward > max_episode_reward:
-            max_episode_reward = episode_reward
+        if episode_reward > max_episode_reward or episode % 10 == 0:
+            save_prefix = f'reward:{episode_reward:1f}'
+            if episode_reward > max_episode_reward:
+                max_episode_reward = episode_reward
+                save_prefix = f'max_reward:{episode_reward:1f}'
 
-            done = False
-            state = env.reset()
+                checkpoint.save(file_prefix=f'{good_checkpoint_dir}/ckpt-{episode}-{episode_reward:.4f}')
 
-            step = 0
-            while not done:
-                actions = sac.policy.get_action(state)
-                state, reward, done, _ = env.step(actions)
-                env.render(episode, step)
-                step += 1
+
+            if False:
+                done = False
+                state = env.reset()
+
+                step = 0
+                while not done:
+                    actions = sac.policy.get_action(state)
+                    state, reward, done, _ = env.step(actions)
+                    env.render(episode, step, save_prefix)
+                    step += 1
 
 class NormalizedActions(gym.ActionWrapper):
     def action(self, action):

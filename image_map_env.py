@@ -14,14 +14,17 @@ import image_map_game as imap
 class CustomEnv(gym.Env):
     metadata = {'render.modes': ['human']}
 
-    def __init__(self, map_image):
+    def __init__(self, map_image, can_render=False):
         super().__init__()
 
         self.config = imap.Config()
         self.config.image_path = map_image
 
         self.map_game = imap.MapGame(self.config)
-        self.map_game.init_render()
+
+        self.can_render = can_render
+        if can_render:
+            self.map_game.init_render()
 
         initial_state = self.reset()
 
@@ -36,6 +39,7 @@ class CustomEnv(gym.Env):
         return math.sqrt((car.center.x - self.map_game.goal.x)**2 + (car.center.y - self.map_game.goal.y)**2)
 
     def step(self, actions):
+        old_dists = [self.dist_to_goal(c) for c in self.map_game.cars]
         #print(f'action: {actions}')
         self.map_game.step([actions])
 
@@ -44,19 +48,22 @@ class CustomEnv(gym.Env):
         rewards = []
         dones = []
 
-        for car, orig_dist in zip(self.map_game.cars, self.orig_dists):
+        for car, orig_dist, old_dist in zip(self.map_game.cars, self.orig_dists, old_dists):
             done = car.is_dead
-            reward = -1.
+            reward = -10
 
             dist = self.dist_to_goal(car)
 
             if not car.is_dead:
                 if dist < 3:
-                    reward = 1.
+                    reward = 10
                     done = True
                 else:
-                    reward = 1. - dist / orig_dist - 0.03
+                    #reward = (orig_dist - dist) / (orig_dist) - 1/(orig_dist)
+                    #reward = 1. - dist / orig_dist - 0.1
+                    reward = -dist / (orig_dist * 10)
 
+            #print(f'actions: {actions}, dist: {old_dist:.3f} -> {dist:.3f}, orig_dist: {orig_dist:.3f}, reward: {reward:.3f}')
             rewards.append(reward)
             dones.append(done)
 
@@ -72,11 +79,12 @@ class CustomEnv(gym.Env):
 
         return initial_state
 
-    def render(self, episode, step, mode='human', close=False):
-        self.map_game.render()
+    def render(self, episode, step, prefix, mode='human', close=False):
+        if self.can_render:
+            self.map_game.render()
 
         if self.config.output_dir:
-            out_dir = os.path.join(self.config.output_dir, f'{episode:06d}')
+            out_dir = os.path.join(self.config.output_dir, f'{episode:06d}_{prefix}')
             os.makedirs(out_dir, exist_ok=True)
             out_fn = os.path.join(out_dir, f'stream{step:04d}.png')
             pygame.image.save(self.map_game.window, out_fn)

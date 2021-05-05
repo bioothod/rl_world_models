@@ -1,13 +1,24 @@
-from __future__ import annotations
+#from __future__ import annotations
 from typing import *
 
 import argparse
 import os
 import PIL
+#import PIL.Image
 import pygame
+import sys
 
 import matplotlib.pyplot as plt
 import numpy as np
+
+if sys.version_info < (3, 7):
+    class Coord:
+        pass
+    class Polygon:
+        pass
+    class Config:
+        pass
+
 
 class Coord:
     def __init__(self, x: float, y: float):
@@ -24,10 +35,12 @@ class Coord:
         y = self.y - c.y
         return Coord(x, y)
 
-    def __mult__(self, f: float) -> Coord:
+    def __mul__(self, f: float) -> Coord:
         x = self.x * f
         y = self.y * f
         return Coord(x, y)
+    def __rmul__(self, f: float) -> Coord:
+        return self.__mul__(f)
 
     def __truediv__(self, f: float) -> Coord:
         x = self.x / f
@@ -35,7 +48,7 @@ class Coord:
         return Coord(x, y)
 
     def __repr__(self) -> str:
-        return f'({self.x:.1f}.{self.y:.1f})'
+        return f'({self.x:.4f},{self.y:.4f})'
 
     def export(self) -> Tuple[float, float]:
         return (self.x, self.y)
@@ -78,43 +91,53 @@ class Beam:
     def __init__(self, config: Config, c0: Coord, c1: Coord):
         self.config = config
         self.start = c0
-        self.go_right = c1.x >= c0.x
 
-        t = c1 - c0
+        if np.abs(c1.x - c0.x) < 1e-6:
+            self.reverse = True
+            self.a = float(c1.x - c0.x) / float(c1.y - c0.y)
+            self.b = c0.x - c0.y * self.a
 
-        self.a = float(t.y) / (float(t.x) + 1e-10)
-        self.b = c0.y - c0.x * self.a
+            if c1.y > c0.y:
+                self.diff = Coord(0, self.config.lidar_step)
+            else:
+                self.diff = Coord(0, -self.config.lidar_step)
+        else:
+            self.reverse = False
+            self.a = float(c1.y - c0.y) / float(c1.x - c0.x)
+            self.b = c0.y - c0.x * self.a
 
-    def run(self, x: float) -> float:
-        return self.a * x + self.b
+            if c1.x > c0.x:
+                self.diff = Coord(self.config.lidar_step, 0)
+            else:
+                self.diff = Coord(-self.config.lidar_step, 0)
 
-    def coord_is_ok(self, x, y) -> bool:
-        return x < self.config.image_width and y < self.config.image_height and x >= 0 and y >= 0
+    def run(self, c: Coord) -> Coord:
+        if self.reverse:
+            x = self.a * c.y + self.b
+            return Coord(x, c.y)
+        else:
+            y = self.a * c.x + self.b
+            return Coord(c.x, y)
+
+    def coord_is_ok(self, c: Coord) -> bool:
+        return c.x < self.config.image_width and c.y < self.config.image_height and c.x >= 0 and c.y >= 0
 
     def intersect(self) -> Coord:
-        x = self.start.x
-        y = self.run(x)
+        c = self.start
 
-        step = 1
-        while self.coord_is_ok(x, y):
-            p = self.config.image_map.getpixel((x, y))
+        while True:
+            p = self.config.image_map.getpixel(c.export_int())
             if p in self.config.obstacle_colours:
                 break
 
-            if self.go_right:
-                nx = x + step
-                if nx >= self.config.image_width:
-                    break
-            else:
-                nx = x - step
-                if nx < 0:
-                    break
+            nc = c + self.diff
+            nc = self.run(nc)
+            if not self.coord_is_ok(nc):
+                break
 
-            x = nx
-            y = self.run(x)
-            step *= self.config.step_multiplier
+            c = nc
 
-        return Coord(x, y)
+        return c
 
 class Car:
     coords: Polygon
@@ -158,6 +181,17 @@ class Car:
         self.coords = self.coords.rotate(angle)
         self.coords += self.center
 
+    def bound(self, p):
+        x = p.x
+        y = p.y
+
+        if x > self.config.image_width:
+            x = self.config.image_width
+        if y > self.config.image_height:
+            y = self.config.image_height
+
+        return Coord(x, y)
+
     def run_beams(self) -> None:
         c0 = self.coords[0]
         c1 = self.coords[1]
@@ -168,12 +202,14 @@ class Car:
         beams_right = []
 
         beam_points = [c0, c1, c2, c3, (c0+c1)/2, (c1+c2)/2, (c2+c3)/2, (c3+c0)/2]
+        #beam_points = [(c0+c1)/2, (c1+c2)/2, (c2+c3)/2, (c3+c0)/2]
 
         self.endpoints = []
 
         for b in beam_points:
             beam = Beam(self.config, self.center, b)
             endpoint = beam.intersect()
+            endpoint = self.bound(endpoint)
 
             self.endpoints.append(endpoint)
 
@@ -185,20 +221,19 @@ class Car:
         rotation_value = np.clip(rotation_value, self.config.rotation_value_min, self.config.rotation_value_max)
         acceleration_value = np.clip(acceleration_value, self.config.acceleration_value_min, self.config.acceleration_value_max)
 
-        self.steering_angle += rotation_value
+        self.steering_angle += rotation_value * self.config.rotation_ratio
         self.steering_angle = np.clip(rotation_value, self.config.min_steering_angle, self.config.max_steering_angle)
 
         if acceleration_value < 0:
             acceleration_value = acceleration_value * self.config.backward_acceleration_ratio
+        else:
+            acceleration_value = acceleration_value * self.config.forward_acceleration_ratio
 
         self.angle += self.steering_angle
-        self.angle %= np.pi
+        self.angle %= 2 * np.pi
 
         self.velocity += acceleration_value
-        if self.velocity > 1:
-            self.velocity = 1
-        if self.velocity < -1:
-            self.velocity = -1
+        self.velocity = np.clip(self.velocity, -1, 1)
 
         vel_x = self.velocity * np.cos(self.angle)
         vel_y = self.velocity * np.sin(self.angle)
@@ -208,24 +243,35 @@ class Car:
         off = Coord(vel_x*step, vel_y*step)
 
         self.center += off
-        if self.center.x > self.config.image_width:
-            self.center.x = self.config.image_width
-        if self.center.y > self.config.image_height:
-            self.center.y = self.config.image_height
+        self.center = self.bound(self.center)
 
         self.update_coords()
         self.run_beams()
 
+        #state = self.current_state()
+        #norm_center = self.point_norm(self.center)
+        #dist = self.dist_to_point(norm_center, self.point_norm(self.config.goal))
+        #print(f'c: {self.center}, norm: {norm_center}, dist: {dist:.4f}, angle: {self.angle:.4f}, velocity: {self.velocity:.4f}, beam_dists: {state[4:]}')
+
+    def point_norm(self, c):
+        return Coord(c.x / float(self.config.image_width), c.y / float(self.config.image_height))
+
+    @staticmethod
+    def dist_to_point(a, p):
+        return np.math.sqrt((a.x - p.x)**2 + (a.y - p.y)**2)
+
     def current_state(self):
-        def point_norm(c):
-            return [c.x / self.config.image_width, c.y / self.config.image_height]
-
-        flat_beam_intersections = []
+        norm_center = self.point_norm(self.center)
+        flat_beam_dists = []
         for ep in self.endpoints:
-            flat_beam_intersections += point_norm(ep)
+            ep = self.point_norm(ep)
 
-        #return np.array(point_norm(self.center) + [self.angle, self.velocity] + flat_beam_intersections)
-        return np.array(point_norm(self.center) + [self.angle, self.velocity])
+            dist = self.dist_to_point(norm_center, ep)
+            flat_beam_dists.append(dist)
+
+        #return np.array(list(norm_center.export()) + [self.angle, self.velocity] + flat_beam_dists)
+        return np.array([self.angle, self.velocity] + flat_beam_dists)
+        #return np.array([self.angle, self.velocity])
 
     def render(self) -> None:
         colour = self.config.car_colour
@@ -234,9 +280,9 @@ class Car:
 
         pygame.draw.polygon(self.window, colour, self.coords.export_int())
 
-        #if not self.is_dead:
-        #    for ep in self.endpoints:
-        #        pygame.draw.line(self.window, self.config.beam_colour, self.center.export_int(), ep.export_int())
+        if not self.is_dead:
+            for ep in self.endpoints:
+                pygame.draw.line(self.window, self.config.beam_colour, self.center.export_int(), ep.export_int())
 
 class Config:
     image_path = ''
@@ -249,7 +295,7 @@ class Config:
     car_width = 3
     car_length = 8
 
-    step_multiplier = 1.3
+    lidar_step = 2
 
     start_colour = (0xff, 0xee, 0x00)
     nonroad_colour = (255, 255, 255)
@@ -258,12 +304,13 @@ class Config:
     dead_car_colour = (0, 0, 0)
     goal_colour = (0, 0, 255)
 
-    goal = Coord(569, 338)
+    #goal = Coord(569, 338)
+    goal = Coord(300, 50)
 
     obstacle_colours = [nonroad_colour, car_colour, dead_car_colour]
     road_colours = [start_colour, goal_colour]
 
-    backward_acceleration_ratio = 0.5
+    backward_acceleration_ratio = 0.1
 
     max_steering_angle = np.pi/4
     min_steering_angle = -np.pi/4
@@ -272,8 +319,12 @@ class Config:
     rotation_value_min = -rotation_value_abs
     rotation_value_max = rotation_value_abs
 
-    acceleration_value_min = -0.1
-    acceleration_value_max = 0.2
+    rotation_ratio = 0.1
+    backward_acceleration_ratio = 0.05
+    forward_acceleration_ratio = 0.1
+
+    acceleration_value_min = -1
+    acceleration_value_max = +1
 
 class MapGame:
     window: pygame.Surface
@@ -282,6 +333,7 @@ class MapGame:
 
     def __init__(self, config: Config):
         self.config = config
+        self.window = None
 
         self.reset()
 
@@ -413,7 +465,7 @@ def main() -> Any:
         #environment.step(action)
         # render current state
 
-        actions = [[0.01, 0.01]]*FLAGS.num_cars
+        actions = [[0.01, 0.0]]*FLAGS.num_cars
         map_game.step(actions)
         map_game.render()
 
