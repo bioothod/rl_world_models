@@ -72,12 +72,27 @@ class CustomEnv(gym.Env):
     def reset(self):
         self.map_game.reset()
         self.map_game.add_cars(1)
+        #self.map_game.set_random_goal()
 
         self.orig_dists = [self.dist_to_goal(car) for car in self.map_game.cars]
 
         initial_state = self.map_game.current_state()[0]
 
         return initial_state
+
+    def last_dist(self):
+        for i, (car, orig_dist) in enumerate(zip(self.map_game.cars, self.orig_dists)):
+            dist = self.dist_to_goal(car) / orig_dist
+            return dist
+
+    def print_state(self):
+        car_messages = []
+        for i, (car, orig_dist) in enumerate(zip(self.map_game.cars, self.orig_dists)):
+            dist = self.dist_to_goal(car)
+            r = dist / orig_dist
+            car_messages.append(f'c{i}: dist: {int(dist)}/{int(orig_dist)}/{r:.3f}')
+
+        return f'goal: {self.map_game.goal}, ' + ', '.join(car_messages)
 
     def render(self, episode, step, prefix, mode='human', close=False):
         if self.can_render:

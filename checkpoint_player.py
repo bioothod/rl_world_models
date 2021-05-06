@@ -100,10 +100,9 @@ def main() -> Any:
         if 41 in pressed_keys:
             break
 
-        state = map_game.current_state()[0]
-
         actions = []
-        for _ in range(FLAGS.num_cars):
+        for i in range(FLAGS.num_cars):
+            state = map_game.current_state(i)[0]
             action = policy.get_action(state)
             actions.append(action)
 

@@ -1,4 +1,4 @@
-#from __future__ import annotations
+from __future__ import annotations
 from typing import *
 
 import argparse
@@ -48,7 +48,7 @@ class Coord:
         return Coord(x, y)
 
     def __repr__(self) -> str:
-        return f'({self.x:.4f},{self.y:.4f})'
+        return f'({self.x:.2f},{self.y:.2f})'
 
     def export(self) -> Tuple[float, float]:
         return (self.x, self.y)
@@ -150,6 +150,8 @@ class Car:
         self.endpoints = []
         self.is_dead = False
 
+        self.set_goal(config.goal)
+
         self.velocity = 0.
         self.steering_angle = 0.
 
@@ -180,6 +182,9 @@ class Car:
         self.coords -= self.center # pytype: disable=attribute-error
         self.coords = self.coords.rotate(angle)
         self.coords += self.center
+
+    def set_goal(self, goal):
+        self.goal = goal
 
     def bound(self, p):
         x = p.x
@@ -250,7 +255,7 @@ class Car:
 
         #state = self.current_state()
         #norm_center = self.point_norm(self.center)
-        #dist = self.dist_to_point(norm_center, self.point_norm(self.config.goal))
+        #dist = self.dist_to_point(norm_center, self.point_norm(self.goal))
         #print(f'c: {self.center}, norm: {norm_center}, dist: {dist:.4f}, angle: {self.angle:.4f}, velocity: {self.velocity:.4f}, beam_dists: {state[4:]}')
 
     def point_norm(self, c):
@@ -269,8 +274,9 @@ class Car:
             dist = self.dist_to_point(norm_center, ep)
             flat_beam_dists.append(dist)
 
-        #return np.array(list(norm_center.export()) + [self.angle, self.velocity] + flat_beam_dists)
-        return np.array([self.angle, self.velocity] + flat_beam_dists)
+        norm_goal = self.point_norm(self.goal)
+        return np.array(list(norm_center.export()) + list(norm_goal.export()) + [self.angle, self.velocity] + flat_beam_dists)
+        #return np.array([self.angle, self.velocity] + flat_beam_dists)
         #return np.array([self.angle, self.velocity])
 
     def render(self) -> None:
@@ -299,13 +305,13 @@ class Config:
 
     start_colour = (0xff, 0xee, 0x00)
     nonroad_colour = (255, 255, 255)
-    car_colour = (255, 65, 0)
-    beam_colour = (175, 65, 255)
+    car_colour = (0x21, 0x4f, 0x3b)
+    beam_colour = (0x41, 0x29, 0x29)
     dead_car_colour = (0, 0, 0)
     goal_colour = (0, 0, 255)
 
-    #goal = Coord(569, 338)
-    goal = Coord(300, 50)
+    goal = Coord(569, 338)
+    #goal = Coord(300, 50)
 
     obstacle_colours = [nonroad_colour, car_colour, dead_car_colour]
     road_colours = [start_colour, goal_colour]
@@ -344,8 +350,106 @@ class MapGame:
         self.config.image_width = bbox[2]
         self.config.image_height = bbox[3]
 
-        self.goal = config.goal
+        self.set_goal(config.goal)
+
         self.start_min, self.start_max = self.locate_start()
+
+    def set_goal(self, goal):
+        self.goal = goal
+
+        for car in self.cars:
+            car.set_goal(goal)
+
+    def coord_is_ok(self, c: Coord) -> bool:
+        return c.x < self.config.image_width and c.y < self.config.image_height and c.x >= 0 and c.y >= 0
+
+    def set_random_goal(self):
+        x = np.random.randint(self.config.image_width)
+        y = np.random.randint(self.config.image_height)
+
+        points = []
+
+        for i in range(x, self.config.image_width, 1):
+            p = self.config.image_map.getpixel((i, y))
+            if not p in self.config.obstacle_colours:
+                dist = i - x
+                points.append((dist, Coord(i, y)))
+                break
+
+        for i in range(x, 0, -1):
+            p = self.config.image_map.getpixel((i, y))
+            if not p in self.config.obstacle_colours:
+                dist = x - i
+                points.append((dist, Coord(i, y)))
+                break
+
+        for j in range(y, self.config.image_height, 1):
+            p = self.config.image_map.getpixel((x, j))
+            if not p in self.config.obstacle_colours:
+                dist = j - y
+                points.append((dist, Coord(x, j)))
+                break
+
+        for j in range(y, 0, -1):
+            p = self.config.image_map.getpixel((x, j))
+            if not p in self.config.obstacle_colours:
+                dist = y - j
+                points.append((dist, Coord(x, j)))
+                break
+
+        for i in range(min(self.config.image_width, self.config.image_height)):
+            c = Coord(x+i, y+i)
+            if not self.coord_is_ok(c):
+                break
+
+            p = self.config.image_map.getpixel((c.x, c.y))
+            if not p in self.config.obstacle_colours:
+                dist = i
+                points.append((dist, c))
+                break
+
+        for i in range(min(self.config.image_width, self.config.image_height)):
+            c = Coord(x-i, y-i)
+            if not self.coord_is_ok(c):
+                break
+
+            p = self.config.image_map.getpixel((c.x, c.y))
+            if not p in self.config.obstacle_colours:
+                dist = i
+                points.append((dist, c))
+                break
+
+        for i in range(min(self.config.image_width, self.config.image_height)):
+            c = Coord(x+i, y-i)
+            if not self.coord_is_ok(c):
+                break
+
+            p = self.config.image_map.getpixel((c.x, c.y))
+            if not p in self.config.obstacle_colours:
+                dist = i
+                points.append((dist, c))
+                break
+
+        for i in range(min(self.config.image_width, self.config.image_height)):
+            c = Coord(x-i, y+i)
+            if not self.coord_is_ok(c):
+                break
+
+            p = self.config.image_map.getpixel((c.x, c.y))
+            if not p in self.config.obstacle_colours:
+                dist = i
+                points.append((dist, c))
+                break
+
+        min_dist = points[0][0]
+        goal = points[0][1]
+        for p in points[1:]:
+            dist = p[0]
+            g = p[1]
+            if dist < min_dist:
+                goal = g
+
+        self.set_goal(goal)
 
     def locate_start(self) -> Tuple[Coord, Coord]:
         a = np.asarray(self.image)
@@ -369,7 +473,7 @@ class MapGame:
         step_x = diff_x / num_cars
         step_y = diff_y / num_cars
         for i in range(num_cars):
-            c = self.start_min + Coord((step_x)*i, (step_y + self.config.car_width*2)*i)
+            c = self.start_min + Coord((step_x)*i, (step_y + self.config.car_width)*i)
             self.add_car(c)
 
     def add_car(self, coord: Coord) -> None:
@@ -377,6 +481,7 @@ class MapGame:
         angle = 0
         angle = angle * np.pi / 180.
         c = Car(self.config, coord, angle, self.window)
+        c.set_goal(self.goal)
         self.cars.append(c)
 
     def init_render(self) -> None:
@@ -398,10 +503,9 @@ class MapGame:
     def reset(self) -> None:
         self.cars = []
 
-    def current_state(self):
+    def current_state(self, car_number=0):
         states = []
-        for car in self.cars:
-            states.append(car.current_state())
+        states.append(self.cars[car_number].current_state())
 
         return np.vstack(states)
 
