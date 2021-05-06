@@ -390,7 +390,7 @@ class SoftActorCritic:
                 break
 
         self.epoch_var.assign_add(1)
-        return episode_reward
+        return episode_reward, t
 
 
 def main(env):
@@ -432,11 +432,15 @@ def main(env):
     soft_tau = 5e-3
 
     now = datetime.now()
-    good_checkpoint_dir = os.path.join('checkpoints', now.strftime("%Y.%m.%d_%H:%M:%S"))
-    os.makedirs(good_checkpoint_dir, exist_ok=True)
+    checkpoint_dir = os.path.join('checkpoints', now.strftime("%Y.%m.%d_%H:%M:%S"))
+    os.makedirs(checkpoint_dir, exist_ok=True)
+
+    handler = logging.FileHandler(os.path.join(checkpoint_dir, 'train.log'), 'a')
+    handler.setFormatter(fmt)
+    logger.addHandler(handler)
 
     sac = SoftActorCritic(
-            env = env,
+            env=env,
             actor_hidden_layers=actor_hidden_layers,
             critic_hidden_layers=critic_hidden_layers,
             batch_size=batch_size,
@@ -451,38 +455,50 @@ def main(env):
 
     checkpoint = tf.train.Checkpoint(step=sac.global_step, epoch=sac.epoch_var, policy=sac.policy, qs=sac.qs, log_alpha=sac.log_alpha)
 
+    min_dist = 1.
     max_episode_reward = -100
     rewards = []
     for episode in range(100000):
         initial_state = env.reset()
         initial_state = initial_state.astype(np_dtype)
 
-        episode_reward = sac.run_episode(initial_state)
+        episode_reward, episode_length = sac.run_episode(initial_state)
 
         episode_reward = episode_reward.numpy()
+        episode_length = episode_length.numpy()
 
         rewards.append(episode_reward)
         if len(rewards) > 100:
             rewards = rewards[1:]
         avg_reward = np.mean(rewards)
 
-        q_logs = [f'q{q_idx}: {q.result():2.4f}' for q_idx, q in enumerate(sac.q_metrics)]
+        dist = env.last_dist()
+
+        q_logs = [f'q{q_idx}: {q.result():2.3f}' for q_idx, q in enumerate(sac.q_metrics)]
         q_log = ', '.join(q_logs)
 
-        logger.info(f'{episode:4d}: step: {sac.global_step.numpy():5d}, episode_reward: {episode_reward:5.2f}/{max_episode_reward:5.2f}, avg_reward: {avg_reward:5.2f}, losses: '
-                f'policy: {sac.policy_metric.result():3.4f}, '
+        logger.info(f'{episode}: step: {sac.global_step.numpy()}, {env.print_state()}, elen: {episode_length}, '
+                f'dist: {dist:.4f}/{min_dist:.4f}, '
+                f'reward: {episode_reward:5.2f}/{max_episode_reward:5.2f}, avg: {avg_reward:5.2f}, '
+                f'losses: '
+                f'policy: {sac.policy_metric.result():3.3f}, '
                 f'{q_log}, '
-                f'alpha: {sac.alpha_metric.result():2.4f}, '
-                f'entropy: {tf.convert_to_tensor(sac.alpha).numpy():.4f}')
+                f'alpha: {sac.alpha_metric.result():2.3f}, '
+                f'entropy: {tf.convert_to_tensor(sac.alpha).numpy():.3f}')
 
-        if episode_reward > max_episode_reward or episode % 10 == 0:
-            save_prefix = f'reward:{episode_reward:1f}'
+        if episode_reward > max_episode_reward or dist < min_dist or dist < 0.1:
+            dist_prefix = f'dist:{dist:.4f}'
+            reward_prefix = f'reward:{episode_reward:.4f}'
+
             if episode_reward > max_episode_reward:
                 max_episode_reward = episode_reward
-                save_prefix = f'max_reward:{episode_reward:1f}'
+                reward_prefix = f'max_reward:{episode_reward:.4f}'
 
-                checkpoint.save(file_prefix=f'{good_checkpoint_dir}/ckpt-{episode}-{episode_reward:.4f}')
+            if dist < min_dist:
+                min_dist = dist
+                dist_prefix = f'min_dist:{dist:.4f}'
 
+            checkpoint.save(file_prefix=f'{checkpoint_dir}/ckpt-{episode}-{dist_prefix}-{reward_prefix}')
 
             if False:
                 done = False
