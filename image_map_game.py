@@ -92,7 +92,7 @@ class Beam:
         self.config = config
         self.start = c0
 
-        if np.abs(c1.x - c0.x) < 1e-6:
+        if np.abs(c1.x - c0.x) < np.abs(c1.y - c0.y):
             self.reverse = True
             self.a = float(c1.x - c0.x) / float(c1.y - c0.y)
             self.b = c0.x - c0.y * self.a
